@@ -1,8 +1,0 @@
-export CXX=clang++
-export CC=clang
-
-mkdir build
-cd build
-cmake -G Ninja ..
-ninja -j32
-./treemap
