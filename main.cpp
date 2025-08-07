@@ -6,13 +6,17 @@
 #include <unordered_set>
 #include <vector>
 #include <unordered_map>
+#include <format>
+#include <cmath>
 
-const int screen_width = 600;
-const int screen_height = 400;
+const int screen_width = 600*2;
+const int screen_height = 400*2;
 const float aspect_ratio = static_cast<float>(screen_width) / static_cast<float>(screen_height);
 const double total_pixels = screen_width * screen_height;
 
-std::vector<Color> colours = {RED, GREEN, BLUE};
+
+int colour_index = 0;
+std::vector<Color> colours = {RED, GREEN, BLUE, YELLOW, BLACK};
 
 double double_check_size = 0;
 
@@ -26,6 +30,15 @@ struct DisplayNode {
     Vector2 positions;
     Color colour;
 };
+
+std::string represent_vector2(Vector2 *vector2) {
+    return std::format("x: {}, y:{}", vector2->x, vector2->y);
+}
+
+void print_display_node(DisplayNode *display_node) {
+    printf("dimensions: %s\n", represent_vector2(&display_node->dimensions).c_str());
+    printf("positions: %s\n", represent_vector2(&display_node->positions).c_str());
+}
 
 struct TreemapNode {
     std::string name;
@@ -162,10 +175,15 @@ struct DisplayBoundingBox {
     double area;
 };
 
-double worst(std::vector<double> *areas, float width) {
-    double s = std::accumulate(areas->begin(), areas->end(), 0);
-    double worst_aspect_ratio = -1;
+double worst(double pixel_scale_factor, std::vector<double> *areas, float width) {
+    std::vector<double> scaled_areas;
+    scaled_areas.reserve(areas->size());
     for (double area: *areas) {
+        scaled_areas.push_back(area * pixel_scale_factor);
+    }
+    double s = std::accumulate(scaled_areas.begin(), scaled_areas.end(), 0);
+    double worst_aspect_ratio = -1;
+    for (double area: scaled_areas) {
         double t0 = (width * width * area) / (s * s);
         double t1 = (s * s) / (width * width * area);
         worst_aspect_ratio = std::max(std::max(t0, t1), worst_aspect_ratio);
@@ -182,70 +200,99 @@ struct LayoutNode {
 
 struct Layout {
     int current_index;
+    std::vector<double> current_row;
     std::unordered_map<int, int> parent_map;
     std::vector<LayoutNode> layout_nodes;
     std::vector<DisplayNode> display_nodes;
     double pixel_scale_factor;
 };
-
 double get_width(LayoutNode *layout_node) {
-    return  layout_node->position.x 
-            ? layout_node->position.x < layout_node->position.y 
-            : layout_node->position.y;
+    double my_width = (layout_node->dimensions.x > layout_node->dimensions.y)
+            ? layout_node->dimensions.y 
+            : layout_node->dimensions.x;
+    return my_width;
 }
 
 void layout_row(Layout *layout, std::vector<double> *current_row) {
+    printf("Beginning layout_row! \n");
     LayoutNode current_layout_node = layout->layout_nodes.at(layout->current_index);
     double row_area = std::accumulate(current_row->begin(), current_row->end(), 0);
     std::vector<DisplayNode> display_nodes = {};
-    
     // A layout node is column oriented if it is wider than it is tall.
     // The column_oriented boolean determines in which direction to pack
     // the rectangles.
     bool column_oriented = (current_layout_node.dimensions.x > current_layout_node.dimensions.y);
-
     for (double size: *current_row) {
         DisplayNode display_node;
         if (column_oriented) {
             double scale_factor =  size / row_area;
+            printf("%f\n", size * layout->pixel_scale_factor);
             display_node.dimensions.y   = current_layout_node.dimensions.y * scale_factor;
             display_node.dimensions.x   = size * layout->pixel_scale_factor 
-                                        / current_layout_node.dimensions.y;
+                                        / display_node.dimensions.y;
         }
-        else {}
+        else {
+            double scale_factor =  size / row_area;
+            display_node.dimensions.x = current_layout_node.dimensions.x * scale_factor;
+            display_node.dimensions.y = size * layout->pixel_scale_factor / display_node.dimensions.x;
+
+        }
         display_nodes.push_back(display_node);
     }
     
     // Handle the positioning of the boxes within the layout node.
     Vector2 current_position = current_layout_node.position;
+    Vector2 occupied_dimensions = {0,0};
     for (int i = 0 ; i < display_nodes.size(); i++) {
-        DisplayNode *display_node = &display_nodes.at(i);
-        display_node->positions = current_layout_node.position;
-        display_node->colour = colours.at(i % colours.size());
-        current_position.x += (!column_oriented)*display_node->dimensions.x;
-        current_position.y += column_oriented*display_node->dimensions.y;
-        layout->display_nodes.push_back(*display_node);
+        DisplayNode display_node = display_nodes.at(i);
+        display_node.positions = current_position;
+        colour_index++;
+        colour_index*=(colour_index < colours.size());
+        display_node.colour = colours.at(colour_index);
+        current_position.x += (!column_oriented)*display_node.dimensions.x;
+        current_position.y += column_oriented*display_node.dimensions.y;
+        layout->display_nodes.push_back(display_node);
+        occupied_dimensions.x = (column_oriented)*display_node.dimensions.x;
+        occupied_dimensions.y = (!column_oriented)*display_node.dimensions.y;
     }
 
-    layout->current_index ++;
     layout->layout_nodes.push_back({});
-    LayoutNode *child_layout_node = &layout->layout_nodes.at(layout->current_index);
+    LayoutNode *child_layout_node = &layout->layout_nodes.back();
+    child_layout_node->dimensions.x = current_layout_node.dimensions.x - (column_oriented*occupied_dimensions.x);
+    child_layout_node->dimensions.y = current_layout_node.dimensions.y - (!column_oriented*occupied_dimensions.y);
+    child_layout_node->area = current_layout_node.area - row_area;
+    child_layout_node->position.x = current_layout_node.position.x + occupied_dimensions.x;
+    child_layout_node->position.y = current_layout_node.position.y + occupied_dimensions.y;
+    printf("%s: child layout node position\n", represent_vector2(&child_layout_node->position).c_str());
+    layout->current_index ++;
 }
 
-void squarify(Layout *layout, int index, std::vector<double> *sizes, std::vector<double> *current_row, float width) {
+void squarify(Layout *layout, int index, std::vector<double> *sizes) {
+    printf("index: [%d]\n", index);
     double current_child = sizes->at(index);
-    double aspect_ratio_before = worst(current_row, width);
+    LayoutNode *current_layout_node = &layout->layout_nodes.at(layout->current_index);
+    std::vector<double> *current_row = &layout->current_row;
+    Vector2 dims = layout->layout_nodes.at(layout->current_index).dimensions;
+    double width = get_width(current_layout_node);
+    double aspect_ratio_before = worst(layout->pixel_scale_factor, current_row, width);
     current_row->push_back(current_child);
-    double aspect_ratio_after = worst(current_row, width);
+    double aspect_ratio_after = worst(layout->pixel_scale_factor, current_row, width);
     current_row->pop_back();
-    if (aspect_ratio_before <= aspect_ratio_after) {
+    if ((aspect_ratio_before > aspect_ratio_after) | (aspect_ratio_before == -1)) {
         current_row->push_back(current_child);
-        if (index == sizes->size() - 1) return;
-        squarify(layout, index++, sizes, current_row, width);
+        index ++;
+        // They've all been processed.
+        if (index == sizes->size()) {
+            layout_row(layout, current_row);
+        }
+        else {
+            squarify(layout, index, sizes);
+        }
     }
     else {
         layout_row(layout, current_row);
-        squarify(layout, index, sizes, {}, get_width(&layout->layout_nodes.at(layout->current_index)));
+        layout->current_row.clear();
+        squarify(layout, index, sizes);
     }
 }
 
@@ -261,23 +308,11 @@ void populate_layout(Layout *layout, std::vector<double> *sizes) {
     layout->pixel_scale_factor = (root_layout_node.dimensions.x * root_layout_node.dimensions.y) / root_layout_node.area;
 }
 
-void draw_treemap(Treemap *treemap, std::vector<double> *sizes) {
+std::vector<DisplayNode> fill_treemap(Treemap *treemap, std::vector<double> *sizes) {
     Layout layout = {};
     populate_layout(&layout, sizes);
-    squarify(&layout, 0, sizes, {}, get_width(&layout.layout_nodes.at(layout.current_index)));
-
-    BeginDrawing();
-        ClearBackground(RAYWHITE);
-        for (const DisplayNode display_node: layout.display_nodes) {
-            DrawRectangle(
-                display_node.positions.x, 
-                display_node.positions.y, 
-                display_node.dimensions.x, 
-                display_node.dimensions.y, 
-                display_node.colour
-            );
-        }
-    EndDrawing();
+    squarify(&layout, 0, sizes);
+    return layout.display_nodes;
 }
 
 void compute_sizes(Treemap *treemap) { populate_parent_size(treemap, 0); }
@@ -289,13 +324,29 @@ int main()
     compute_sizes(&treemap);
     InitWindow(screen_width, screen_height, "raylib");
     SetTargetFPS(60);
-    std::vector<double> sizes = {6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0};
+    
+    std::vector<double> sizes;
+    for (TreemapNode node : treemap.nodes) {
+        sizes.push_back(1.0);
+    }
+    // std::vector<double> sizes = {6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0};
+    std::vector<DisplayNode> display_nodes = fill_treemap(&treemap, &sizes);
     while (!WindowShouldClose()) {
-        draw_treemap(&treemap, &sizes);
+        BeginDrawing();
+            ClearBackground(RAYWHITE);
+            for (DisplayNode display_node: display_nodes) {
+                DrawRectangle(
+                    static_cast<int>(std::round(display_node.positions.x)), 
+                    static_cast<int>(std::round(display_node.positions.y)), 
+                    static_cast<int>(std::round(display_node.dimensions.x)), 
+                    static_cast<int>(std::round(display_node.dimensions.y)), 
+                    display_node.colour
+                );
+            }
+        EndDrawing();
     }
     /*
     print_treemap(&treemap, 0);
-    float disparity = static_cast<double>(treemap.nodes.at(0).size) - double_check_size;
     printf("root size: %f\n", treemap.nodes.at(0).size);
     printf("double_check_size: %1.f\n", double_check_size);
     printf("Total disparity: %1.f \n", disparity);
